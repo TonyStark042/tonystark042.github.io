@@ -2,6 +2,8 @@ import { readFile, writeFile } from 'node:fs/promises';
 
 const PROFILE_ID = 'qV5hX1cAAAAJ';
 const PROFILE_URL = `https://scholar.google.com/citations?hl=en&user=${PROFILE_ID}&pagesize=100`;
+const SERPAPI_URL = 'https://serpapi.com/search.json';
+const SERPAPI_KEY = process.env.SERPAPI_KEY;
 const INDEX_PATH = new URL('../index.html', import.meta.url);
 const METRICS_PATH = new URL('../assets/publication-metrics.json', import.meta.url);
 const DRY_RUN = process.argv.includes('--dry-run');
@@ -19,34 +21,37 @@ const papers = [
 
 const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 
-function decodeHtml(value) {
-  return value
-    .replace(/<[^>]*>/g, '')
-    .replace(/&amp;/g, '&')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;|&#x27;/g, "'")
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
+function normalizeTitle(value) {
+  return String(value)
+    .normalize('NFKC')
+    .replace(/[‐‑‒–—]/g, '-')
     .replace(/\s+/g, ' ')
-    .trim();
+    .trim()
+    .toLowerCase();
 }
 
-async function fetchScholarProfile() {
+async function fetchScholarArticles() {
+  if (!SERPAPI_KEY) throw new Error('Missing required SERPAPI_KEY environment variable');
+
+  const parameters = new URLSearchParams({
+    engine: 'google_scholar_author',
+    author_id: PROFILE_ID,
+    hl: 'en',
+    num: '100',
+    api_key: SERPAPI_KEY
+  });
   let lastError;
 
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
-      const response = await fetch(PROFILE_URL, {
-        headers: {
-          'Accept-Language': 'en-US,en;q=0.9',
-          'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/141.0 Safari/537.36'
-        }
-      });
+      const response = await fetch(`${SERPAPI_URL}?${parameters}`);
 
-      if (!response.ok) throw new Error(`Google Scholar returned HTTP ${response.status}`);
-      const html = await response.text();
-      if (!html.includes('gsc_a_tr')) throw new Error('Google Scholar returned no publication rows');
-      return html;
+      if (!response.ok) throw new Error(`SerpApi returned HTTP ${response.status}`);
+      const payload = await response.json();
+      if (payload.error) throw new Error(`SerpApi error: ${payload.error}`);
+      if (!Array.isArray(payload.articles)) throw new Error('SerpApi returned no Google Scholar articles');
+
+      return payload.articles;
     } catch (error) {
       lastError = error;
       if (attempt < 3) await delay(attempt * 5000);
@@ -56,18 +61,13 @@ async function fetchScholarProfile() {
   throw lastError;
 }
 
-function extractCitations(html) {
+function extractCitations(articles) {
   const results = new Map();
-  const rows = html.match(/<tr class="gsc_a_tr">[\s\S]*?<\/tr>/g) ?? [];
 
-  for (const row of rows) {
-    const titleMatch = row.match(/class="gsc_a_at"[^>]*>([\s\S]*?)<\/a>/);
-    if (!titleMatch) continue;
-
-    const title = decodeHtml(titleMatch[1]);
-    const countMatch = row.match(/class="gsc_a_ac gs_ibl"[^>]*>([\d,]*)<\/a>/);
-    const count = countMatch?.[1] ? Number(countMatch[1].replaceAll(',', '')) : 0;
-    results.set(title, count);
+  for (const article of articles) {
+    const title = normalizeTitle(article.title ?? '');
+    const count = Number(article.cited_by?.value ?? 0);
+    if (title && Number.isFinite(count)) results.set(title, count);
   }
 
   return results;
@@ -79,18 +79,19 @@ function replaceCitationCount(html, key, count) {
   return html.replace(pattern, (_, opening, closing) => `${opening}${count}${closing}`);
 }
 
-const profileHtml = await fetchScholarProfile();
-const citationsByTitle = extractCitations(profileHtml);
+const articles = await fetchScholarArticles();
+const citationsByTitle = extractCitations(articles);
 let homepageHtml = await readFile(INDEX_PATH, 'utf8');
 const currentMetrics = JSON.parse(await readFile(METRICS_PATH, 'utf8'));
 const summary = {};
 
 for (const paper of papers) {
-  if (!citationsByTitle.has(paper.title)) {
+  const normalizedTitle = normalizeTitle(paper.title);
+  if (!citationsByTitle.has(normalizedTitle)) {
     throw new Error(`Paper not found on Google Scholar profile: ${paper.title}`);
   }
 
-  const count = citationsByTitle.get(paper.title);
+  const count = citationsByTitle.get(normalizedTitle);
   homepageHtml = replaceCitationCount(homepageHtml, paper.key, count);
   summary[paper.key] = count;
 }

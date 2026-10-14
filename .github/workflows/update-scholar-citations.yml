@@ -32,6 +32,8 @@ jobs:
           node-version: 22
 
       - name: Fetch Google Scholar citation counts
+        env:
+          SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
         run: node scripts/update-scholar-citations.mjs
 
       - name: Prepare static site
