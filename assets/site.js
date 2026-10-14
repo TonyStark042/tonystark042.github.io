@@ -116,3 +116,23 @@ fetch(PUBLICATION_METRICS_URL, { cache: 'no-store' })
       if (link) link.dataset.metricState = 'fallback';
     });
   });
+
+const SITE_VISITS_URL = 'https://shuaizhen.goatcounter.com/counter/TOTAL.json';
+
+fetch(SITE_VISITS_URL, { cache: 'no-store' })
+  .then(response => {
+    if (!response.ok) throw new Error(`Site visits request failed with ${response.status}`);
+    return response.json();
+  })
+  .then(({ count }) => {
+    const target = document.querySelector('[data-site-visits]');
+    const container = document.querySelector('[data-site-visits-container]');
+    const formattedCount = String(count ?? '').trim();
+    if (!target || !container || !formattedCount) return;
+
+    target.textContent = formattedCount;
+    container.hidden = false;
+  })
+  .catch(() => {
+    // Keep the counter hidden when GoatCounter is unavailable or blocked.
+  });
